@@ -2,6 +2,10 @@
 
 A containerized FastAPI service that visits up to five public websites with Playwright, extracts small pieces of page data, and saves full-page PNG snapshots.
 
+## Author
+
+Aniruddha Salve — salveaniruddha180@gmail.com
+
 ## Run locally with Docker
 
 ```bash
