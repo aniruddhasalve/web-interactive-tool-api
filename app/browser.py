@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -19,10 +20,14 @@ class BrowserRunner:
 
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=True,
-            args=["--disable-dev-shm-usage", "--no-sandbox"],
-        )
+        launch_options = {
+            "headless": True,
+            "args": ["--disable-dev-shm-usage", "--no-sandbox"],
+        }
+        executable_path = os.getenv("CHROMIUM_EXECUTABLE_PATH")
+        if executable_path:
+            launch_options["executable_path"] = executable_path
+        self._browser = await self._playwright.chromium.launch(**launch_options)
 
     async def stop(self) -> None:
         if self._browser:
@@ -98,7 +103,7 @@ class BrowserRunner:
         elif action.type == "extract_text":
             if not action.selector:
                 raise ValueError("extract_text requires selector")
-            return await page.locator(action.selector).inner_text(timeout=action.timeout_ms)
+            return await page.locator(action.selector).first.inner_text(timeout=action.timeout_ms)
         elif action.type == "click":
             if not action.selector:
                 raise ValueError("click requires selector")
