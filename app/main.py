@@ -6,73 +6,132 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
+from .agent import AgentRunner, AgentSession
 from .browser import BrowserRunner
-from .models import JobRecord, JobStatus, RunRequest
+from .models import AgentTaskRecord, AgentTaskRequest, AgentTaskStatus, JobRecord, JobStatus, RunRequest
+from .security import UnsafeUrlError, validate_public_url
 
 ARTIFACT_DIR = Path(os.getenv("ARTIFACT_DIR", "/artifacts")).resolve()
 MAX_SITES = int(os.getenv("MAX_SITES_PER_JOB", "5"))
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT_SECONDS", "30"))
 
 app = FastAPI(
-    title="Tools Engine",
-    version="0.1.0",
-    description="A safe MVP browser automation service that visits public websites and captures snapshots.",
+    title="Web Interactive Tools API",
+    version="0.2.0",
+    description="A browser automation API with an OpenAI tool-calling agent layer.",
 )
 runner = BrowserRunner(ARTIFACT_DIR)
+agent_runner: AgentRunner | None = None
 jobs: dict[str, JobRecord] = {}
-job_tasks: set[asyncio.Task] = set()
+agent_tasks: dict[str, AgentTaskRecord] = {}
+agent_sessions: dict[str, AgentSession] = {}
+background_tasks: set[asyncio.Task] = set()
 
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def track(task: asyncio.Task) -> None:
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+
 @app.on_event("startup")
 async def startup() -> None:
+    global agent_runner
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     await runner.start()
+    if runner._browser is None:
+        raise RuntimeError("Browser did not start")
+    agent_runner = AgentRunner(runner._browser, ARTIFACT_DIR)
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    for task in list(job_tasks):
+    for task in list(background_tasks):
         task.cancel()
+    for session in list(agent_sessions.values()):
+        await session.context.close()
     await runner.stop()
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"service": "tools-engine", "status": "ok", "browser": "available"}
+async def health() -> dict[str, str | bool]:
+    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("OPENAI_API_KEY"))}
 
 
 @app.post("/v1/runs", response_model=dict[str, str], status_code=202)
-async def create_run(request: RunRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
+async def create_run(request: RunRequest) -> dict[str, str]:
     if len(request.sites) > MAX_SITES:
         raise HTTPException(status_code=400, detail=f"A maximum of {MAX_SITES} sites is allowed")
-
     job_id = f"job_{uuid.uuid4().hex[:12]}"
-    record = JobRecord(
-        job_id=job_id,
-        run_id=request.run_id,
-        status=JobStatus.queued,
-        created_at=now(),
-    )
-    jobs[job_id] = record
-    task = asyncio.create_task(execute_job(job_id, request))
-    job_tasks.add(task)
-    task.add_done_callback(job_tasks.discard)
-    return {"job_id": job_id, "status": record.status.value}
+    jobs[job_id] = JobRecord(job_id=job_id, run_id=request.run_id, status=JobStatus.queued, created_at=now())
+    track(asyncio.create_task(execute_job(job_id, request)))
+    return {"job_id": job_id, "status": JobStatus.queued.value}
 
 
 @app.get("/v1/jobs/{job_id}", response_model=JobRecord)
 async def get_job(job_id: str) -> JobRecord:
-    record = jobs.get(job_id)
-    if not record:
+    if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    return record
+    return jobs[job_id]
+
+
+@app.post("/v1/agent/tasks", response_model=dict[str, str], status_code=202)
+async def create_agent_task(request: AgentTaskRequest) -> dict[str, str]:
+    try:
+        validate_public_url(str(request.url))
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if agent_runner is None:
+        raise HTTPException(status_code=503, detail="Browser agent is not ready")
+    task_id = f"task_{uuid.uuid4().hex[:12]}"
+    agent_tasks[task_id] = AgentTaskRecord(task_id=task_id, url=str(request.url), instruction=request.instruction, status=AgentTaskStatus.queued, created_at=now())
+    track(asyncio.create_task(execute_agent_task(task_id, request)))
+    return {"task_id": task_id, "status": AgentTaskStatus.queued.value}
+
+
+@app.get("/v1/agent/tasks/{task_id}", response_model=AgentTaskRecord)
+async def get_agent_task(task_id: str) -> AgentTaskRecord:
+    if task_id not in agent_tasks:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    return agent_tasks[task_id]
+
+
+@app.get("/v1/agent/tasks/{task_id}/events")
+async def get_agent_events(task_id: str) -> list[dict]:
+    return (await get_agent_task(task_id)).events
+
+
+@app.post("/v1/agent/tasks/{task_id}/confirm", response_model=dict[str, str])
+async def confirm_agent_task(task_id: str) -> dict[str, str]:
+    task = await get_agent_task(task_id)
+    if task.status != AgentTaskStatus.waiting_confirmation:
+        raise HTTPException(status_code=409, detail="Task is not waiting for confirmation")
+    session = agent_sessions.get(task_id)
+    if session is None or agent_runner is None:
+        raise HTTPException(status_code=410, detail="Agent session is no longer available")
+    task.status = AgentTaskStatus.running
+    pending = session.pending_confirmation or {}
+    session.messages.append({"role": "tool", "tool_call_id": pending.get("tool_call_id", "confirmation"), "content": '{"confirmed": true, "proceed": true}'})
+    session.pending_confirmation = None
+    track(asyncio.create_task(resume_agent_task(task_id)))
+    return {"task_id": task_id, "status": task.status.value}
+
+
+@app.post("/v1/agent/tasks/{task_id}/cancel", response_model=dict[str, str])
+async def cancel_agent_task(task_id: str) -> dict[str, str]:
+    task = await get_agent_task(task_id)
+    task.status = AgentTaskStatus.cancelled
+    task.finished_at = now()
+    session = agent_sessions.pop(task_id, None)
+    if session:
+        await session.context.close()
+    return {"task_id": task_id, "status": task.status.value}
 
 
 @app.get("/v1/jobs/{job_id}/artifacts/{filename}")
@@ -86,17 +145,17 @@ async def get_artifact(job_id: str, filename: str) -> FileResponse:
     return FileResponse(artifact, media_type="image/png", filename=artifact.name)
 
 
+@app.get("/v1/agent/tasks/{task_id}/artifacts/{filename}")
+async def get_agent_artifact(task_id: str, filename: str) -> FileResponse:
+    return await get_artifact(task_id, filename)
+
+
 async def execute_job(job_id: str, request: RunRequest) -> None:
     record = jobs[job_id]
     record.status = JobStatus.running
     record.started_at = now()
-    timeout = request.timeout_seconds or DEFAULT_TIMEOUT
     try:
-        # Sequential execution keeps browser resource use predictable in the MVP.
-        record.results = [
-            await runner.run_site(job_id, target, timeout)
-            for target in request.sites
-        ]
+        record.results = [await runner.run_site(job_id, target, request.timeout_seconds or DEFAULT_TIMEOUT) for target in request.sites]
         record.status = JobStatus.completed
     except Exception as exc:
         record.status = JobStatus.failed
@@ -105,7 +164,49 @@ async def execute_job(job_id: str, request: RunRequest) -> None:
         record.finished_at = now()
 
 
+async def execute_agent_task(task_id: str, request: AgentTaskRequest) -> None:
+    task = agent_tasks[task_id]
+    task.status = AgentTaskStatus.running
+    task.started_at = now()
+    try:
+        if agent_runner is None:
+            raise RuntimeError("AI agent is not configured")
+        session = await agent_runner.start_session(task_id, str(request.url), request.instruction, request.max_steps, request.timeout_seconds)
+        agent_sessions[task_id] = session
+        apply_agent_result(task, await agent_runner.run_until_pause(session), session)
+    except Exception as exc:
+        task.status = AgentTaskStatus.failed
+        task.error = str(exc)[:1_000]
+        task.finished_at = now()
+
+
+async def resume_agent_task(task_id: str) -> None:
+    task = agent_tasks[task_id]
+    session = agent_sessions[task_id]
+    try:
+        apply_agent_result(task, await agent_runner.run_until_pause(session, allow_submission=True), session)  # type: ignore[union-attr]
+    except Exception as exc:
+        task.status = AgentTaskStatus.failed
+        task.error = str(exc)[:1_000]
+        task.finished_at = now()
+
+
+def apply_agent_result(task: AgentTaskRecord, result: dict, session: AgentSession) -> None:
+    task.step_count = session.step_count
+    task.events = session.events
+    task.result = result
+    if result.get("status") == "waiting_confirmation":
+        task.status = AgentTaskStatus.waiting_confirmation
+        task.confirmation = result.get("confirmation")
+    elif result.get("status") == "completed":
+        task.status = AgentTaskStatus.completed
+        task.finished_at = now()
+    else:
+        task.status = AgentTaskStatus.failed
+        task.error = result.get("error", "Agent stopped")
+        task.finished_at = now()
+
+
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)

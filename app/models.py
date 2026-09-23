@@ -71,3 +71,34 @@ class JobRecord(BaseModel):
     finished_at: datetime | None = None
     results: list[SiteResult] = Field(default_factory=list)
     error: str | None = None
+
+
+class AgentTaskStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    waiting_confirmation = "waiting_confirmation"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class AgentTaskRequest(BaseModel):
+    url: HttpUrl
+    instruction: str = Field(min_length=1, max_length=4_000)
+    max_steps: int = Field(default=20, ge=1, le=40)
+    timeout_seconds: int = Field(default=30, ge=5, le=120)
+
+
+class AgentTaskRecord(BaseModel):
+    task_id: str
+    url: str
+    instruction: str
+    status: AgentTaskStatus
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    step_count: int = 0
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    confirmation: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
