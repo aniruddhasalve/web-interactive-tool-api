@@ -1,0 +1,48 @@
+{
+  "run_id": "five-public-sites-demo",
+  "timeout_seconds": 30,
+  "sites": [
+    {
+      "name": "example",
+      "url": "https://example.com",
+      "actions": [
+        {"type": "extract_title"},
+        {"type": "screenshot", "full_page": true}
+      ]
+    },
+    {
+      "name": "python",
+      "url": "https://www.python.org",
+      "actions": [
+        {"type": "extract_title"},
+        {"type": "extract_text", "selector": "h1"},
+        {"type": "screenshot", "full_page": true}
+      ]
+    },
+    {
+      "name": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/FastAPI",
+      "actions": [
+        {"type": "extract_title"},
+        {"type": "screenshot", "full_page": true}
+      ]
+    },
+    {
+      "name": "hackernews",
+      "url": "https://news.ycombinator.com",
+      "actions": [
+        {"type": "extract_title"},
+        {"type": "extract_text", "selector": ".titleline a"},
+        {"type": "screenshot", "full_page": true}
+      ]
+    },
+    {
+      "name": "github",
+      "url": "https://github.com/fastapi/fastapi",
+      "actions": [
+        {"type": "extract_title"},
+        {"type": "screenshot", "full_page": true}
+      ]
+    }
+  ]
+}

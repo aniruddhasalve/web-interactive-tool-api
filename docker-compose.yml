@@ -1,0 +1,12 @@
+services:
+  tools-engine:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ARTIFACT_DIR: /artifacts
+      MAX_SITES_PER_JOB: 5
+      DEFAULT_TIMEOUT_SECONDS: 30
+    volumes:
+      - ./artifacts:/artifacts
+    restart: unless-stopped
