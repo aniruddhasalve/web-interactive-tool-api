@@ -7,9 +7,8 @@ services:
       ARTIFACT_DIR: /artifacts
       MAX_SITES_PER_JOB: 5
       DEFAULT_TIMEOUT_SECONDS: 30
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_API_BASE: ${OPENAI_API_BASE:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
     volumes:
       - ./artifacts:/artifacts
     restart: unless-stopped

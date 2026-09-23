@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
@@ -14,6 +15,8 @@ from .browser import BrowserRunner
 from .models import AgentTaskRecord, AgentTaskRequest, AgentTaskStatus, JobRecord, JobStatus, RunRequest
 from .security import UnsafeUrlError, validate_public_url
 
+load_dotenv()
+
 ARTIFACT_DIR = Path(os.getenv("ARTIFACT_DIR", "/artifacts")).resolve()
 MAX_SITES = int(os.getenv("MAX_SITES_PER_JOB", "5"))
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT_SECONDS", "30"))
@@ -21,7 +24,7 @@ DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT_SECONDS", "30"))
 app = FastAPI(
     title="Web Interactive Tools API",
     version="0.2.0",
-    description="A browser automation API with an OpenAI tool-calling agent layer.",
+    description="A browser automation API with an Anthropic Claude tool-calling agent layer.",
 )
 runner = BrowserRunner(ARTIFACT_DIR)
 agent_runner: AgentRunner | None = None
@@ -61,7 +64,7 @@ async def shutdown() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str | bool]:
-    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("OPENAI_API_KEY"))}
+    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("ANTHROPIC_API_KEY")), "model_provider": "anthropic"}
 
 
 @app.post("/v1/runs", response_model=dict[str, str], status_code=202)
@@ -117,7 +120,14 @@ async def confirm_agent_task(task_id: str) -> dict[str, str]:
         raise HTTPException(status_code=410, detail="Agent session is no longer available")
     task.status = AgentTaskStatus.running
     pending = session.pending_confirmation or {}
-    session.messages.append({"role": "tool", "tool_call_id": pending.get("tool_call_id", "confirmation"), "content": '{"confirmed": true, "proceed": true}'})
+    session.messages.append({
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": pending.get("tool_call_id", "confirmation"),
+            "content": '{"confirmed": true, "proceed": true}',
+        }],
+    })
     session.pending_confirmation = None
     track(asyncio.create_task(resume_agent_task(task_id)))
     return {"task_id": task_id, "status": task.status.value}

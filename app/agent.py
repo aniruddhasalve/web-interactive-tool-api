@@ -3,17 +3,16 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 from playwright.async_api import BrowserContext, Page
 
 from .security import validate_public_url
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -98,6 +97,15 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+CLAUDE_TOOLS = [
+    {
+        "name": item["function"]["name"],
+        "description": item["function"]["description"],
+        "input_schema": item["function"]["parameters"],
+    }
+    for item in TOOLS
+]
+
 SYSTEM_PROMPT = """You are a browser agent. Complete the user's instruction by observing the current page and using only the provided browser tools.
 
 Rules:
@@ -127,13 +135,12 @@ class AgentRunner:
     def __init__(self, browser, artifact_dir: Path) -> None:
         self.browser = browser
         self.artifact_dir = artifact_dir
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url) if api_key else None
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.client = AsyncAnthropic(api_key=api_key) if api_key else None
 
     async def start_session(self, task_id: str, url: str, instruction: str, max_steps: int, timeout_seconds: int) -> AgentSession:
         if not self.client:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
         validate_public_url(url)
         context = await self.browser.new_context(viewport={"width": 1440, "height": 900})
         page = await context.new_page()
@@ -144,7 +151,6 @@ class AgentRunner:
             context=context,
             page=page,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"User instruction: {instruction}\nInitial page observation:\n{await self.observe(page)}"},
             ],
             max_steps=max_steps,
@@ -155,27 +161,26 @@ class AgentRunner:
 
     async def run_until_pause(self, session: AgentSession, allow_submission: bool = False) -> dict[str, Any]:
         if not self.client:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
         while session.step_count < session.max_steps:
             session.step_count += 1
-            completion = await self.client.chat.completions.create(
+            completion = await self.client.messages.create(
                 model=MODEL,
+                system=SYSTEM_PROMPT,
                 messages=session.messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                max_completion_tokens=1_500,
+                tools=CLAUDE_TOOLS,
+                max_tokens=1_500,
             )
-            if not completion.choices:
-                raise RuntimeError("The model returned no choices")
-            message = completion.choices[0].message
-            session.messages.append(message.model_dump(exclude_none=True))
-            if not message.tool_calls:
-                summary = message.content or "The agent stopped without a summary."
+            session.messages.append({"role": "assistant", "content": [block.model_dump() for block in completion.content]})
+            tool_calls = [block for block in completion.content if block.type == "tool_use"]
+            if not tool_calls:
+                summary = "\n".join(block.text for block in completion.content if block.type == "text") or "The agent stopped without a summary."
                 return {"status": "completed", "summary": summary}
 
-            for tool_call in message.tool_calls:
-                name = tool_call.function.name
-                args = json.loads(tool_call.function.arguments or "{}")
+            tool_results = []
+            for tool_call in tool_calls:
+                name = tool_call.name
+                args = tool_call.input or {}
                 event = {"step": session.step_count, "tool": name, "arguments": self._mask_args(name, args)}
                 if name == "submit_form" and not allow_submission:
                     session.pending_confirmation = {
@@ -190,7 +195,9 @@ class AgentRunner:
                 result = await self.execute_tool(session, name, args, allow_submission)
                 event["result"] = result
                 session.events.append(event)
-                session.messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(result)})
+                tool_results.append({"type": "tool_result", "tool_use_id": tool_call.id, "content": json.dumps(result)})
+
+            session.messages.append({"role": "user", "content": tool_results})
 
             session.messages.append({"role": "user", "content": f"Updated page observation after step {session.step_count}:\n{await self.observe(session.page)}"})
 

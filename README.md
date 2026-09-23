@@ -10,11 +10,11 @@ Aniruddha Salve — salveaniruddha180@gmail.com
 
 The API also accepts a natural-language instruction and lets an OpenAI tool-calling agent operate the browser dynamically. The agent can inspect visible text and controls, click selectors or coordinates, type, press keys, select options, scroll, drag on canvas applications, and capture screenshots. Form submission is confirmation-gated.
 
-Set an API key before starting the service:
+Set a direct Anthropic Claude API key before starting the service:
 
 ```bash
-export OPENAI_API_KEY=your-key
-export OPENAI_MODEL=gpt-4o-mini
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY
 ```
 
 Create an agent task:
