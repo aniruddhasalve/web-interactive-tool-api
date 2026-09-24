@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
-MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "100"))
+MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "500"))
 MAX_AGENT_TIMEOUT = int(os.getenv("MAX_AGENT_TIMEOUT_SECONDS", "1800"))
 DEFAULT_REQUIRE_CONFIRMATION = os.getenv("DEFAULT_REQUIRE_CONFIRMATION", "true").lower() == "true"
 
