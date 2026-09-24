@@ -88,6 +88,8 @@ Both runners create `.env` from `.env.example` when it is missing, create the lo
 
 The agent defaults to 20 steps and 60 seconds per task. The maximum bounds can be configured through `MAX_AGENT_STEPS` and `MAX_AGENT_TIMEOUT_SECONDS`; the defaults are 60 steps and 180 seconds. Independent multi-site targets run with bounded concurrency.
 
+Agent tasks use the caller-provided `timeout_seconds` as a hard wall-clock budget. Dynamic pages should use at least 60 seconds. Repeated wait actions are capped at two waits per task, and each wait is limited to two seconds, so a task cannot spend its entire budget waiting without re-observing the page.
+
 ## Persistent login sessions and private clients
 
 The Docker configuration mounts `browser-profile/` as a persistent Chromium profile. This allows cookies and local session state to survive container restarts. The agent does not bypass login, MFA, CAPTCHA, or bot checks; complete those steps through an authorized browser session before running the workflow. `GET /v1/browser/session` reports whether the profile is enabled and lists its active pages.

@@ -73,7 +73,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "wait",
         "description": "Wait for a JavaScript-heavy page or multi-step onboarding screen to render.",
-        "parameters": {"type": "object", "properties": {"milliseconds": {"type": "integer", "minimum": 250, "maximum": 10000, "default": 1000}}, "required": []},
+        "parameters": {"type": "object", "properties": {"milliseconds": {"type": "integer", "minimum": 250, "maximum": 2000, "default": 750}}, "required": []},
     },
     {
         "name": "navigate",
@@ -137,6 +137,7 @@ Rules:
 - If an action fails, try a different locator strategy, scroll the target into view, wait for rendering, or inspect the updated page before retrying. Do not repeat the identical failed action indefinitely.
 - Treat a click as successful only after observing a state change, URL change, dialog, validation message, or other evidence.
 - Use wait for JavaScript-heavy pages, navigate for history/reload recovery, and screenshot when the visual layout is needed.
+- Use wait at most twice, for short waits only; then inspect the page or finish instead of repeatedly waiting.
 - For games and canvas apps, use drag, click, and press_key based on observed canvas dimensions and visible UI.
 - Do not submit forms, make purchases, send messages, or change account/security settings without the submit_form tool. The API may require confirmation before that tool submits.
 - Keep the task focused and stop with finish when complete or blocked.
@@ -161,6 +162,7 @@ class AgentSession:
     shared_context: bool = False
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     deadline: float = 0.0
+    consecutive_waits: int = 0
 
 
 class AgentRunner:
@@ -245,6 +247,29 @@ class AgentRunner:
             for tool_call in tool_calls:
                 name = tool_call["name"]
                 args = tool_call.get("input") or {}
+                if name == "wait":
+                    session.consecutive_waits += 1
+                    if session.consecutive_waits > 2:
+                        result = {
+                            "ok": False,
+                            "error": "Repeated waits are not allowed. Inspect the current page now or finish with a diagnostic.",
+                            "recoverable": True,
+                        }
+                        session.events.append({
+                            "step": session.step_count,
+                            "tool": name,
+                            "arguments": self._mask_args(name, args),
+                            "result": result,
+                        })
+                        tool_results.append({
+                            "toolResult": {
+                                "toolUseId": tool_call["toolUseId"],
+                                "content": [{"text": json.dumps(result)}],
+                            }
+                        })
+                        continue
+                else:
+                    session.consecutive_waits = 0
                 event = {"step": session.step_count, "tool": name, "arguments": self._mask_args(name, args)}
                 if name == "submit_form" and session.require_confirmation and not allow_submission:
                     session.pending_confirmation = {
@@ -398,7 +423,7 @@ class AgentRunner:
             await page.mouse.wheel(0, args["amount"])
             return {"ok": True}
         if name == "wait":
-            milliseconds = max(250, min(10_000, int(args.get("milliseconds", 1_000))))
+            milliseconds = max(250, min(2_000, int(args.get("milliseconds", 750))))
             await asyncio.sleep(milliseconds / 1000)
             return {"ok": True, "waited_ms": milliseconds}
         if name == "navigate":
