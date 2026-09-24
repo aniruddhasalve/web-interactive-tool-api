@@ -160,6 +160,7 @@ class AgentSession:
     action_failures: int = 0
     shared_context: bool = False
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    deadline: float = 0.0
 
 
 class AgentRunner:
@@ -202,6 +203,7 @@ class AgentRunner:
             artifact_dir=self.artifact_dir,
             require_confirmation=require_confirmation,
             shared_context=shared_context,
+            deadline=time.monotonic() + timeout_seconds,
         )
         page.on("console", lambda message: session.diagnostics.append({"type": "console", "level": message.type, "text": message.text[:500]}))
         page.on("pageerror", lambda error: session.diagnostics.append({"type": "pageerror", "text": str(error)[:500]}))
@@ -209,17 +211,25 @@ class AgentRunner:
 
     async def run_until_pause(self, session: AgentSession, allow_submission: bool = False) -> dict[str, Any]:
         while session.step_count < session.max_steps:
+            remaining = session.deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "failed", "error": f"Agent timed out after {session.timeout_seconds} seconds"}
             session.step_count += 1
             self.compact_messages(session)
             try:
-                completion = await asyncio.to_thread(
-                    self.client.converse,
-                    modelId=MODEL_ID,
-                    system=[{"text": SYSTEM_PROMPT}],
-                    messages=session.messages,
-                    toolConfig={"tools": BEDROCK_TOOLS},
-                    inferenceConfig={"maxTokens": 2_000, "temperature": 0.1},
+                completion = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.client.converse,
+                        modelId=MODEL_ID,
+                        system=[{"text": SYSTEM_PROMPT}],
+                        messages=session.messages,
+                        toolConfig={"tools": BEDROCK_TOOLS},
+                        inferenceConfig={"maxTokens": 1_200, "temperature": 0.1},
+                    ),
+                    timeout=remaining,
                 )
+            except asyncio.TimeoutError:
+                return {"status": "failed", "error": f"Agent timed out after {session.timeout_seconds} seconds"}
             except Exception as exc:
                 session.events.append({"step": session.step_count, "status": "model_error", "error": str(exc)[:500]})
                 return {"status": "failed", "error": f"Model call failed: {exc}"}
@@ -446,12 +456,12 @@ class AgentRunner:
 
     async def observe(self, page: Page) -> str:
         title = await page.title()
-        body = (await page.locator("body").inner_text(timeout=5_000))[:20_000]
+        body = (await page.locator("body").inner_text(timeout=3_000))[:8_000]
         controls = await page.locator("input, textarea, select, button, a, [role='button'], [role='link'], [role='textbox'], [role='combobox'], [role='checkbox'], [role='radio']").evaluate_all(
             """els => els.filter(el => {
                 const style = window.getComputedStyle(el);
                 return style.display !== 'none' && style.visibility !== 'hidden' && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
-            }).slice(0, 100).map((el, i) => ({
+            }).slice(0, 50).map((el, i) => ({
                 index: i, tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || '').slice(0, 160),
                 id: el.id || null, name: el.getAttribute('name'), type: el.getAttribute('type'), role: el.getAttribute('role'),
                 placeholder: el.getAttribute('placeholder'), aria: el.getAttribute('aria-label'),

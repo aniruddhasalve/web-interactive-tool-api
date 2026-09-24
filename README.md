@@ -86,7 +86,7 @@ runner.bat
 
 Both runners create `.env` from `.env.example` when it is missing, create the local `artifacts` directory, and start the service with Docker Compose. The runner accepts additional Docker Compose arguments, for example `runner.bat --detach` or `./runner.sh --detach`.
 
-The agent defaults to 40 steps and 120 seconds per task. The maximum bounds can be configured through `MAX_AGENT_STEPS` and `MAX_AGENT_TIMEOUT_SECONDS`; the defaults are 160 steps and 600 seconds.
+The agent defaults to 20 steps and 60 seconds per task. The maximum bounds can be configured through `MAX_AGENT_STEPS` and `MAX_AGENT_TIMEOUT_SECONDS`; the defaults are 60 steps and 180 seconds. Independent multi-site targets run with bounded concurrency.
 
 ## Persistent login sessions and private clients
 

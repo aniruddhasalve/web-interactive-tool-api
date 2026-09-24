@@ -207,7 +207,13 @@ async def execute_job(job_id: str, request: RunRequest) -> None:
     record.status = JobStatus.running
     record.started_at = now()
     try:
-        record.results = [await runner.run_site(job_id, target, request.timeout_seconds or DEFAULT_TIMEOUT) for target in request.sites]
+        semaphore = asyncio.Semaphore(min(3, len(request.sites)))
+
+        async def run_target(target):
+            async with semaphore:
+                return await runner.run_site(job_id, target, request.timeout_seconds or DEFAULT_TIMEOUT)
+
+        record.results = await asyncio.gather(*(run_target(target) for target in request.sites))
         record.status = JobStatus.completed
     except Exception as exc:
         record.status = JobStatus.failed
