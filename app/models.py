@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+
+MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "160"))
+MAX_AGENT_TIMEOUT = int(os.getenv("MAX_AGENT_TIMEOUT_SECONDS", "600"))
 
 
 class JobStatus(str, Enum):
@@ -85,8 +90,8 @@ class AgentTaskStatus(str, Enum):
 class AgentTaskRequest(BaseModel):
     url: HttpUrl
     instruction: str = Field(min_length=1, max_length=4_000)
-    max_steps: int = Field(default=20, ge=1, le=40)
-    timeout_seconds: int = Field(default=30, ge=5, le=120)
+    max_steps: int = Field(default=40, ge=1, le=MAX_AGENT_STEPS)
+    timeout_seconds: int = Field(default=120, ge=5, le=MAX_AGENT_TIMEOUT)
     require_confirmation: bool = False
 
 

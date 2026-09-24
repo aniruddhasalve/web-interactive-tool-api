@@ -67,6 +67,27 @@ http://localhost:8000/v1/jobs/JOB_ID/artifacts/example.png
 
 OpenAPI documentation is available at `http://localhost:8000/docs`.
 
+## Setup helpers
+
+On Linux or macOS, run:
+
+```bash
+chmod +x setup.sh runner.sh
+./setup.sh
+# Edit .env with AWS Bedrock configuration
+./runner.sh
+```
+
+On Windows with Docker Desktop, double-click `runner.bat`, or run it from Command Prompt:
+
+```bat
+runner.bat
+```
+
+Both runners create `.env` from `.env.example` when it is missing, create the local `artifacts` directory, and start the service with Docker Compose. The runner accepts additional Docker Compose arguments, for example `runner.bat --detach` or `./runner.sh --detach`.
+
+The agent defaults to 40 steps and 120 seconds per task. The maximum bounds can be configured through `MAX_AGENT_STEPS` and `MAX_AGENT_TIMEOUT_SECONDS`; the defaults are 160 steps and 600 seconds.
+
 ## Project structure
 
 ```text
@@ -80,6 +101,9 @@ tools-engine/
 ├── demo-run.json
 ├── Dockerfile
 ├── docker-compose.yml
+├── setup.sh           # Linux/macOS prerequisite check and image build
+├── runner.sh          # Linux/macOS service runner
+├── runner.bat         # Windows Docker Desktop service runner
 └── requirements.txt
 ```
 

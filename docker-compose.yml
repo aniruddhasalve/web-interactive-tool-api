@@ -12,6 +12,8 @@ services:
       ARTIFACT_DIR: /artifacts
       MAX_SITES_PER_JOB: 5
       DEFAULT_TIMEOUT_SECONDS: 30
+      MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-160}
+      MAX_AGENT_TIMEOUT_SECONDS: ${MAX_AGENT_TIMEOUT_SECONDS:-600}
     volumes:
       - ./artifacts:/artifacts
     restart: unless-stopped

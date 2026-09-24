@@ -178,6 +178,7 @@ async def execute_agent_task(task_id: str, request: AgentTaskRequest) -> None:
     task = agent_tasks[task_id]
     task.status = AgentTaskStatus.running
     task.started_at = now()
+    session: AgentSession | None = None
     try:
         if agent_runner is None:
             raise RuntimeError("AI agent is not configured")
@@ -192,6 +193,9 @@ async def execute_agent_task(task_id: str, request: AgentTaskRequest) -> None:
         agent_sessions[task_id] = session
         apply_agent_result(task, await agent_runner.run_until_pause(session), session)
     except Exception as exc:
+        if session is not None:
+            task.step_count = session.step_count
+            task.events = session.events
         task.status = AgentTaskStatus.failed
         task.error = str(exc)[:1_000]
         task.finished_at = now()
@@ -203,6 +207,8 @@ async def resume_agent_task(task_id: str) -> None:
     try:
         apply_agent_result(task, await agent_runner.run_until_pause(session, allow_submission=True), session)  # type: ignore[union-attr]
     except Exception as exc:
+        task.step_count = session.step_count
+        task.events = session.events
         task.status = AgentTaskStatus.failed
         task.error = str(exc)[:1_000]
         task.finished_at = now()
