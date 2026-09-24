@@ -9,12 +9,12 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import boto3
 from playwright.async_api import BrowserContext, Page
 
-from .security import validate_public_url
+from .security import validate_configured_url
 
 MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
@@ -86,6 +86,21 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "target": {"type": "object"}}, "required": []},
     },
     {
+        "name": "upload_file",
+        "description": "Upload a file from the agent file directory into a visible file input.",
+        "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "target": {"type": "object"}, "filename": {"type": "string"}}, "required": ["filename"]},
+    },
+    {
+        "name": "download",
+        "description": "Click a visible download control and save the resulting file.",
+        "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "target": {"type": "object"}, "name": {"type": "string"}}, "required": ["name"]},
+    },
+    {
+        "name": "diagnostics",
+        "description": "Capture browser console errors, page errors, and current URL for troubleshooting.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "screenshot",
         "description": "Save a screenshot of the current page state.",
         "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
@@ -143,12 +158,15 @@ class AgentSession:
     events: list[dict[str, Any]] = field(default_factory=list)
     last_observation_hash: str | None = None
     action_failures: int = 0
+    shared_context: bool = False
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentRunner:
-    def __init__(self, browser, artifact_dir: Path) -> None:
+    def __init__(self, browser, artifact_dir: Path, context_provider: Callable[[], Awaitable[tuple[BrowserContext, bool]]] | None = None) -> None:
         self.browser = browser
         self.artifact_dir = artifact_dir
+        self.context_provider = context_provider
         self.client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
     async def start_session(
@@ -160,14 +178,15 @@ class AgentRunner:
         timeout_seconds: int,
         require_confirmation: bool = False,
     ) -> AgentSession:
-        validate_public_url(url)
+        validate_configured_url(url)
         # Some test environments use a self-signed or otherwise incomplete TLS
         # certificate. The browser agent must still be able to inspect those
         # explicitly requested sites; URL safety validation remains enforced.
-        context = await self.browser.new_context(
-            viewport={"width": 1440, "height": 900},
-            ignore_https_errors=True,
-        )
+        if self.context_provider:
+            context, shared_context = await self.context_provider()
+        else:
+            context = await self.browser.new_context(viewport={"width": 1440, "height": 900}, ignore_https_errors=True)
+            shared_context = False
         page = await context.new_page()
         page.set_default_timeout(timeout_seconds * 1000)
         await page.goto(url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
@@ -182,7 +201,10 @@ class AgentRunner:
             timeout_seconds=timeout_seconds,
             artifact_dir=self.artifact_dir,
             require_confirmation=require_confirmation,
+            shared_context=shared_context,
         )
+        page.on("console", lambda message: session.diagnostics.append({"type": "console", "level": message.type, "text": message.text[:500]}))
+        page.on("pageerror", lambda error: session.diagnostics.append({"type": "pageerror", "text": str(error)[:500]}))
         return session
 
     async def run_until_pause(self, session: AgentSession, allow_submission: bool = False) -> dict[str, Any]:
@@ -385,6 +407,27 @@ class AgentRunner:
             await locator.scroll_into_view_if_needed(timeout=min(timeout, 10_000))
             await locator.focus(timeout=min(timeout, 10_000))
             return {"ok": True}
+        if name == "upload_file":
+            filename = Path(str(args["filename"])).name
+            file_dir = Path(os.getenv("AGENT_FILE_DIR", "/agent-files")).resolve()
+            file_path = (file_dir / filename).resolve()
+            if file_dir not in file_path.parents or not file_path.is_file():
+                raise ValueError(f"File is not available in the agent file directory: {filename}")
+            locator = await self.resolve_locator(page, args)
+            await locator.set_input_files(str(file_path), timeout=min(timeout, 10_000))
+            return {"ok": True, "filename": filename}
+        if name == "download":
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", str(args["name"]))[:120]
+            path = session.artifact_dir / session.task_id / safe_name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            locator = await self.resolve_locator(page, args)
+            async with page.expect_download(timeout=min(timeout, 30_000)) as download_info:
+                await locator.click(timeout=min(timeout, 10_000))
+            download = await download_info.value
+            await download.save_as(str(path))
+            return {"ok": True, "artifact": f"/artifacts/{session.task_id}/{path.name}"}
+        if name == "diagnostics":
+            return {"ok": True, "url": page.url, "diagnostics": session.diagnostics[-50:]}
         if name == "screenshot":
             safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", args["name"])[:80]
             path = session.artifact_dir / session.task_id / f"{safe_name}.png"

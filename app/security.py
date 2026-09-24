@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from urllib.parse import urlparse
 
@@ -9,7 +10,13 @@ class UnsafeUrlError(ValueError):
     """Raised when a URL is not safe for the browser worker to open."""
 
 
-def validate_public_url(raw_url: str) -> str:
+def validate_configured_url(raw_url: str) -> str:
+    allow_private = os.getenv("ALLOW_PRIVATE_URLS", "false").lower() == "true"
+    allowlist = {item.strip() for item in os.getenv("PRIVATE_URL_ALLOWLIST", "").split(",") if item.strip()}
+    return validate_public_url(raw_url, allow_private=allow_private, allowlist=allowlist)
+
+
+def validate_public_url(raw_url: str, *, allow_private: bool = False, allowlist: set[str] | None = None) -> str:
     parsed = urlparse(raw_url)
     if parsed.scheme not in {"http", "https"}:
         raise UnsafeUrlError("Only http:// and https:// URLs are allowed")
@@ -19,7 +26,9 @@ def validate_public_url(raw_url: str) -> str:
         raise UnsafeUrlError(" URLs with embedded credentials are not allowed")
 
     hostname = parsed.hostname.rstrip(".").lower()
-    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
+    allowed_hosts = {item.rstrip(".").lower() for item in (allowlist or set()) if item.strip()}
+    host_is_allowlisted = hostname in allowed_hosts or any(hostname.endswith(f".{item}") for item in allowed_hosts if not _is_ip(item))
+    if (hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local")) and not (allow_private and host_is_allowlisted):
         raise UnsafeUrlError("Local hostnames are not allowed")
 
     try:
@@ -41,7 +50,15 @@ def validate_public_url(raw_url: str) -> str:
             or address.is_reserved
             or address.is_multicast
             or address.is_unspecified
-        ):
+        ) and not (allow_private and host_is_allowlisted):
             raise UnsafeUrlError("Private or non-public network addresses are not allowed")
 
     return raw_url
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False

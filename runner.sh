@@ -10,4 +10,5 @@ if [ ! -f .env ]; then
 fi
 
 mkdir -p artifacts
+mkdir -p browser-profile agent-files
 exec docker compose up --build "$@"

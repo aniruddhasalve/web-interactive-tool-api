@@ -14,6 +14,15 @@ services:
       DEFAULT_TIMEOUT_SECONDS: 30
       MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-160}
       MAX_AGENT_TIMEOUT_SECONDS: ${MAX_AGENT_TIMEOUT_SECONDS:-600}
+      DEFAULT_REQUIRE_CONFIRMATION: ${DEFAULT_REQUIRE_CONFIRMATION:-true}
+      BROWSER_PROFILE_DIR: /browser-profile
+      BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}
+      AGENT_FILE_DIR: /agent-files
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      ALLOW_PRIVATE_URLS: ${ALLOW_PRIVATE_URLS:-false}
+      PRIVATE_URL_ALLOWLIST: ${PRIVATE_URL_ALLOWLIST:-}
     volumes:
       - ./artifacts:/artifacts
+      - ./browser-profile:/browser-profile
+      - ./agent-files:/agent-files
     restart: unless-stopped

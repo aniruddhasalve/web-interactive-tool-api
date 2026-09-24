@@ -22,6 +22,7 @@ else
 fi
 
 mkdir -p artifacts
+mkdir -p browser-profile agent-files
 
 echo "Building the Playwright service image..."
 docker compose build

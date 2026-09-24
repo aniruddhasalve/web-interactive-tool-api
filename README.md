@@ -88,6 +88,30 @@ Both runners create `.env` from `.env.example` when it is missing, create the lo
 
 The agent defaults to 40 steps and 120 seconds per task. The maximum bounds can be configured through `MAX_AGENT_STEPS` and `MAX_AGENT_TIMEOUT_SECONDS`; the defaults are 160 steps and 600 seconds.
 
+## Persistent login sessions and private clients
+
+The Docker configuration mounts `browser-profile/` as a persistent Chromium profile. This allows cookies and local session state to survive container restarts. The agent does not bypass login, MFA, CAPTCHA, or bot checks; complete those steps through an authorized browser session before running the workflow. `GET /v1/browser/session` reports whether the profile is enabled and lists its active pages.
+
+The profile is enabled by default in Docker with `BROWSER_PROFILE_DIR=/browser-profile`. For a local desktop login flow, set `BROWSER_HEADLESS=false` and run the service in an environment with a display. In headless servers, pre-populate the profile using an approved login bootstrap process rather than putting passwords in task instructions.
+
+Private Redis clients, internal Postman deployments, and other private applications remain blocked unless explicitly allowlisted:
+
+```env
+ALLOW_PRIVATE_URLS=true
+PRIVATE_URL_ALLOWLIST=redis-admin.internal,postman.internal,127.0.0.1
+```
+
+Use the file endpoint to provide an upload before an agent task:
+
+```bash
+curl -X POST http://localhost:8000/v1/agent/files \
+  -F 'file=@./collection.json'
+```
+
+The agent can then use the `upload_file` tool with `collection.json`. Downloaded files and screenshots are returned through the task artifact endpoint. The `diagnostics` tool exposes recent browser console and page errors to help debug dynamic applications.
+
+By default, `DEFAULT_REQUIRE_CONFIRMATION=true`. Set `require_confirmation` explicitly to control whether form submissions, posts, messages, commits, and other externally visible actions pause for review.
+
 ## Project structure
 
 ```text

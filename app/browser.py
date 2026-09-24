@@ -6,10 +6,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .models import Action, SiteResult, SiteTarget
-from .security import validate_public_url
+from .security import validate_configured_url
 
 
 class BrowserRunner:
@@ -17,6 +17,7 @@ class BrowserRunner:
         self.artifact_dir = artifact_dir
         self._playwright = None
         self._browser: Browser | None = None
+        self._agent_context: BrowserContext | None = None
 
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
@@ -28,12 +29,28 @@ class BrowserRunner:
         if executable_path:
             launch_options["executable_path"] = executable_path
         self._browser = await self._playwright.chromium.launch(**launch_options)
+        profile_dir = os.getenv("BROWSER_PROFILE_DIR")
+        if profile_dir:
+            profile_path = Path(profile_dir).resolve()
+            profile_path.mkdir(parents=True, exist_ok=True)
+            persistent_options = {**launch_options, "headless": os.getenv("BROWSER_HEADLESS", "true").lower() != "false"}
+            self._agent_context = await self._playwright.chromium.launch_persistent_context(str(profile_path), **persistent_options)
 
     async def stop(self) -> None:
+        if self._agent_context:
+            await self._agent_context.close()
         if self._browser:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
+
+    async def new_agent_context(self) -> tuple[BrowserContext, bool]:
+        """Return the reusable profile context when configured, otherwise an isolated context."""
+        if self._agent_context:
+            return self._agent_context, True
+        if not self._browser:
+            raise RuntimeError("Browser is not started")
+        return await self._browser.new_context(viewport={"width": 1440, "height": 900}, ignore_https_errors=True), False
 
     async def run_site(
         self,
@@ -44,7 +61,7 @@ class BrowserRunner:
         started = time.perf_counter()
         url = str(target.url)
         try:
-            validate_public_url(url)
+            validate_configured_url(url)
             if not self._browser:
                 raise RuntimeError("Browser is not started")
 

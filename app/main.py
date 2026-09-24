@@ -2,22 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import os
+import mimetypes
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .agent import AgentRunner, AgentSession
 from .browser import BrowserRunner
 from .models import AgentTaskRecord, AgentTaskRequest, AgentTaskStatus, JobRecord, JobStatus, RunRequest
-from .security import UnsafeUrlError, validate_public_url
+from .security import UnsafeUrlError, validate_configured_url
 
 load_dotenv()
 
 ARTIFACT_DIR = Path(os.getenv("ARTIFACT_DIR", "/artifacts")).resolve()
+AGENT_FILE_DIR = Path(os.getenv("AGENT_FILE_DIR", "/agent-files")).resolve()
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 MAX_SITES = int(os.getenv("MAX_SITES_PER_JOB", "5"))
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT_SECONDS", "30"))
 
@@ -31,6 +34,8 @@ agent_runner: AgentRunner | None = None
 jobs: dict[str, JobRecord] = {}
 agent_tasks: dict[str, AgentTaskRecord] = {}
 agent_sessions: dict[str, AgentSession] = {}
+agent_locks: dict[str, asyncio.Lock] = {}
+profile_lock = asyncio.Lock()
 background_tasks: set[asyncio.Task] = set()
 
 
@@ -47,10 +52,11 @@ def track(task: asyncio.Task) -> None:
 async def startup() -> None:
     global agent_runner
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    AGENT_FILE_DIR.mkdir(parents=True, exist_ok=True)
     await runner.start()
     if runner._browser is None:
         raise RuntimeError("Browser did not start")
-    agent_runner = AgentRunner(runner._browser, ARTIFACT_DIR)
+    agent_runner = AgentRunner(runner._browser, ARTIFACT_DIR, runner.new_agent_context)
 
 
 @app.on_event("shutdown")
@@ -58,13 +64,21 @@ async def shutdown() -> None:
     for task in list(background_tasks):
         task.cancel()
     for session in list(agent_sessions.values()):
-        await session.context.close()
+        await close_agent_session(session)
     await runner.stop()
 
 
 @app.get("/health")
 async def health() -> dict[str, str | bool]:
-    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("AWS_REGION") and os.getenv("BEDROCK_MODEL_ID")), "model_provider": "bedrock"}
+    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("AWS_REGION") and os.getenv("BEDROCK_MODEL_ID")), "model_provider": "bedrock", "persistent_profile": bool(os.getenv("BROWSER_PROFILE_DIR"))}
+
+
+@app.get("/v1/browser/session")
+async def browser_session_status() -> dict[str, object]:
+    pages = []
+    if runner._agent_context:
+        pages = [{"url": page.url, "title": await page.title()} for page in runner._agent_context.pages]
+    return {"persistent": bool(runner._agent_context), "profile_dir": os.getenv("BROWSER_PROFILE_DIR"), "pages": pages}
 
 
 @app.post("/v1/runs", response_model=dict[str, str], status_code=202)
@@ -87,12 +101,13 @@ async def get_job(job_id: str) -> JobRecord:
 @app.post("/v1/agent/tasks", response_model=dict[str, str], status_code=202)
 async def create_agent_task(request: AgentTaskRequest) -> dict[str, str]:
     try:
-        validate_public_url(str(request.url))
+        validate_configured_url(str(request.url))
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if agent_runner is None:
         raise HTTPException(status_code=503, detail="Browser agent is not ready")
     task_id = f"task_{uuid.uuid4().hex[:12]}"
+    agent_locks[task_id] = asyncio.Lock()
     agent_tasks[task_id] = AgentTaskRecord(task_id=task_id, url=str(request.url), instruction=request.instruction, status=AgentTaskStatus.queued, created_at=now())
     track(asyncio.create_task(execute_agent_task(task_id, request)))
     return {"task_id": task_id, "status": AgentTaskStatus.queued.value}
@@ -122,11 +137,10 @@ async def confirm_agent_task(task_id: str) -> dict[str, str]:
     pending = session.pending_confirmation or {}
     session.messages.append({
         "role": "user",
-        "content": [{
-            "type": "tool_result",
-            "tool_use_id": pending.get("tool_call_id", "confirmation"),
-            "content": '{"confirmed": true, "proceed": true}',
-        }],
+        "content": [{"toolResult": {
+            "toolUseId": pending.get("tool_call_id", "confirmation"),
+            "content": [{"text": '{"confirmed": true, "proceed": true}'}],
+        }}],
     })
     session.pending_confirmation = None
     track(asyncio.create_task(resume_agent_task(task_id)))
@@ -140,7 +154,8 @@ async def cancel_agent_task(task_id: str) -> dict[str, str]:
     task.finished_at = now()
     session = agent_sessions.pop(task_id, None)
     if session:
-        await session.context.close()
+        await close_agent_session(session)
+    agent_locks.pop(task_id, None)
     return {"task_id": task_id, "status": task.status.value}
 
 
@@ -152,12 +167,39 @@ async def get_artifact(job_id: str, filename: str) -> FileResponse:
     job_dir = (ARTIFACT_DIR / job_id).resolve()
     if job_dir not in artifact.parents or not artifact.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found")
-    return FileResponse(artifact, media_type="image/png", filename=artifact.name)
+    media_type = mimetypes.guess_type(artifact.name)[0] or "application/octet-stream"
+    return FileResponse(artifact, media_type=media_type, filename=artifact.name)
 
 
 @app.get("/v1/agent/tasks/{task_id}/artifacts/{filename}")
 async def get_agent_artifact(task_id: str, filename: str) -> FileResponse:
     return await get_artifact(task_id, filename)
+
+
+@app.post("/v1/agent/files", response_model=dict[str, str], status_code=201)
+async def upload_agent_file(file: UploadFile = File(...)) -> dict[str, str]:
+    safe_name = Path(file.filename or "upload.bin").name
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    destination = (AGENT_FILE_DIR / safe_name).resolve()
+    if AGENT_FILE_DIR not in destination.parents:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    total = 0
+    with destination.open("wb") as output:
+        while chunk := await file.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                destination.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_BYTES} byte limit")
+            output.write(chunk)
+    return {"filename": safe_name, "path": f"/agent-files/{safe_name}"}
+
+
+async def close_agent_session(session: AgentSession) -> None:
+    if session.shared_context:
+        await session.page.close()
+    else:
+        await session.context.close()
 
 
 async def execute_job(job_id: str, request: RunRequest) -> None:
@@ -182,16 +224,19 @@ async def execute_agent_task(task_id: str, request: AgentTaskRequest) -> None:
     try:
         if agent_runner is None:
             raise RuntimeError("AI agent is not configured")
-        session = await agent_runner.start_session(
-            task_id,
-            str(request.url),
-            request.instruction,
-            request.max_steps,
-            request.timeout_seconds,
-            request.require_confirmation,
-        )
+        start_lock = profile_lock if os.getenv("BROWSER_PROFILE_DIR") else agent_locks[task_id]
+        async with start_lock:
+            session = await agent_runner.start_session(
+                task_id,
+                str(request.url),
+                request.instruction,
+                request.max_steps,
+                request.timeout_seconds,
+                request.require_confirmation,
+            )
         agent_sessions[task_id] = session
-        apply_agent_result(task, await agent_runner.run_until_pause(session), session)
+        async with (profile_lock if session.shared_context else agent_locks[task_id]):
+            apply_agent_result(task, await agent_runner.run_until_pause(session), session)
     except Exception as exc:
         if session is not None:
             task.step_count = session.step_count
@@ -205,7 +250,8 @@ async def resume_agent_task(task_id: str) -> None:
     task = agent_tasks[task_id]
     session = agent_sessions[task_id]
     try:
-        apply_agent_result(task, await agent_runner.run_until_pause(session, allow_submission=True), session)  # type: ignore[union-attr]
+        async with (profile_lock if session.shared_context else agent_locks[task_id]):
+            apply_agent_result(task, await agent_runner.run_until_pause(session, allow_submission=True), session)  # type: ignore[union-attr]
     except Exception as exc:
         task.step_count = session.step_count
         task.events = session.events

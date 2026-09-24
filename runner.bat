@@ -20,6 +20,8 @@ if not exist ".env" (
 )
 
 if not exist "artifacts" mkdir "artifacts"
+if not exist "browser-profile" mkdir "browser-profile"
+if not exist "agent-files" mkdir "agent-files"
 
 docker compose up --build %*
 endlocal
