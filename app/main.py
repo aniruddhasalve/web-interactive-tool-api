@@ -23,7 +23,7 @@ AGENT_FILE_DIR = Path(os.getenv("AGENT_FILE_DIR", "/agent-files")).resolve()
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 MAX_SITES = int(os.getenv("MAX_SITES_PER_JOB", "5"))
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT_SECONDS", "30"))
-MIN_AGENT_TIMEOUT = int(os.getenv("MIN_AGENT_TIMEOUT_SECONDS", "120"))
+MIN_AGENT_TIMEOUT = int(os.getenv("MIN_AGENT_TIMEOUT_SECONDS", "1200"))
 
 app = FastAPI(
     title="Web Interactive Tools API",

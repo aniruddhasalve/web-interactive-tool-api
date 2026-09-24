@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "100"))
-MAX_AGENT_TIMEOUT = int(os.getenv("MAX_AGENT_TIMEOUT_SECONDS", "600"))
+MAX_AGENT_TIMEOUT = int(os.getenv("MAX_AGENT_TIMEOUT_SECONDS", "1800"))
 DEFAULT_REQUIRE_CONFIRMATION = os.getenv("DEFAULT_REQUIRE_CONFIRMATION", "true").lower() == "true"
 
 
@@ -92,7 +92,7 @@ class AgentTaskRequest(BaseModel):
     url: HttpUrl
     instruction: str = Field(min_length=1, max_length=4_000)
     max_steps: int = Field(default=40, ge=1, le=MAX_AGENT_STEPS)
-    timeout_seconds: int = Field(default=120, ge=5, le=MAX_AGENT_TIMEOUT)
+    timeout_seconds: int = Field(default=1200, ge=5, le=MAX_AGENT_TIMEOUT)
     require_confirmation: bool = DEFAULT_REQUIRE_CONFIRMATION
 
 
