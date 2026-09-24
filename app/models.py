@@ -87,6 +87,7 @@ class AgentTaskRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=4_000)
     max_steps: int = Field(default=20, ge=1, le=40)
     timeout_seconds: int = Field(default=30, ge=5, le=120)
+    require_confirmation: bool = False
 
 
 class AgentTaskRecord(BaseModel):

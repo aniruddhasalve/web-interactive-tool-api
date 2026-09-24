@@ -24,7 +24,7 @@ DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT_SECONDS", "30"))
 app = FastAPI(
     title="Web Interactive Tools API",
     version="0.2.0",
-    description="A browser automation API with an Anthropic Claude tool-calling agent layer.",
+    description="A browser automation API with an AWS Bedrock tool-calling agent layer.",
 )
 runner = BrowserRunner(ARTIFACT_DIR)
 agent_runner: AgentRunner | None = None
@@ -64,7 +64,7 @@ async def shutdown() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str | bool]:
-    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("ANTHROPIC_API_KEY")), "model_provider": "anthropic"}
+    return {"service": "tools-engine", "status": "ok", "browser": "available", "ai_agent": bool(os.getenv("AWS_REGION") and os.getenv("BEDROCK_MODEL_ID")), "model_provider": "bedrock"}
 
 
 @app.post("/v1/runs", response_model=dict[str, str], status_code=202)
@@ -181,7 +181,14 @@ async def execute_agent_task(task_id: str, request: AgentTaskRequest) -> None:
     try:
         if agent_runner is None:
             raise RuntimeError("AI agent is not configured")
-        session = await agent_runner.start_session(task_id, str(request.url), request.instruction, request.max_steps, request.timeout_seconds)
+        session = await agent_runner.start_session(
+            task_id,
+            str(request.url),
+            request.instruction,
+            request.max_steps,
+            request.timeout_seconds,
+            request.require_confirmation,
+        )
         agent_sessions[task_id] = session
         apply_agent_result(task, await agent_runner.run_until_pause(session), session)
     except Exception as exc:

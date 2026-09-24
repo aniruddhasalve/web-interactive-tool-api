@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -7,101 +8,74 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from anthropic import AsyncAnthropic
+import boto3
 from playwright.async_api import BrowserContext, Page
 
 from .security import validate_public_url
 
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 TOOLS: list[dict[str, Any]] = [
     {
-        "type": "function",
-        "function": {
-            "name": "click",
-            "description": "Click a visible element using a CSS selector.",
-            "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
-        },
+        "name": "click",
+        "description": "Click a visible element using a CSS selector.",
+        "parameters": {"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "click_at",
-            "description": "Click a viewport coordinate. Useful for canvas games when there is no DOM selector.",
-            "parameters": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]},
-        },
+        "name": "click_at",
+        "description": "Click a viewport coordinate. Useful for canvas games when there is no DOM selector.",
+        "parameters": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "type_text",
-            "description": "Fill a visible input, textarea, or contenteditable element.",
-            "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]},
-        },
+        "name": "type_text",
+        "description": "Fill a visible input, textarea, or contenteditable element.",
+        "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "press_key",
-            "description": "Press a keyboard key such as Enter, Escape, ArrowLeft, or Space.",
-            "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]},
-        },
+        "name": "press_key",
+        "description": "Press a keyboard key such as Enter, Escape, ArrowLeft, or Space.",
+        "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "select_option",
-            "description": "Select an option in a native HTML select element.",
-            "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "value": {"type": "string"}}, "required": ["selector", "value"]},
-        },
+        "name": "select_option",
+        "description": "Select an option in a native HTML select element.",
+        "parameters": {"type": "object", "properties": {"selector": {"type": "string"}, "value": {"type": "string"}}, "required": ["selector", "value"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "drag",
-            "description": "Drag from one viewport coordinate to another. Useful for canvas games and drawing applications.",
-            "parameters": {"type": "object", "properties": {"start_x": {"type": "number"}, "start_y": {"type": "number"}, "end_x": {"type": "number"}, "end_y": {"type": "number"}}, "required": ["start_x", "start_y", "end_x", "end_y"]},
-        },
+        "name": "drag",
+        "description": "Drag from one viewport coordinate to another. Useful for canvas games and drawing applications.",
+        "parameters": {"type": "object", "properties": {"start_x": {"type": "number"}, "start_y": {"type": "number"}, "end_x": {"type": "number"}, "end_y": {"type": "number"}}, "required": ["start_x", "start_y", "end_x", "end_y"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "scroll",
-            "description": "Scroll the page vertically.",
-            "parameters": {"type": "object", "properties": {"amount": {"type": "integer", "minimum": -2000, "maximum": 2000}}, "required": ["amount"]},
-        },
+        "name": "scroll",
+        "description": "Scroll the page vertically.",
+        "parameters": {"type": "object", "properties": {"amount": {"type": "integer", "minimum": -2000, "maximum": 2000}}, "required": ["amount"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "screenshot",
-            "description": "Save a screenshot of the current page state.",
-            "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
-        },
+        "name": "screenshot",
+        "description": "Save a screenshot of the current page state.",
+        "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "submit_form",
-            "description": "Submit the primary form. This always pauses for user confirmation first.",
-            "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
-        },
+        "name": "submit_form",
+        "description": "Submit the primary form. If the task requires confirmation, this pauses before submission; otherwise it submits the form.",
+        "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
     },
     {
-        "type": "function",
-        "function": {
-            "name": "finish",
-            "description": "Finish when the user request is complete or cannot be completed.",
-            "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
-        },
+        "name": "finish",
+        "description": "Finish when the user request is complete or cannot be completed.",
+        "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
     },
 ]
 
-CLAUDE_TOOLS = [
+BEDROCK_TOOLS = [
     {
-        "name": item["function"]["name"],
-        "description": item["function"]["description"],
-        "input_schema": item["function"]["parameters"],
+        "toolSpec": {
+            "name": item["name"],
+            "description": item["description"],
+            "inputSchema": {"json": item["parameters"]},
+        }
     }
     for item in TOOLS
 ]
@@ -112,7 +86,7 @@ Rules:
 - Never invent that an action succeeded; inspect the page after actions.
 - Prefer visible, public UI controls. Do not bypass CAPTCHAs, authentication, paywalls, or access controls.
 - For games and canvas apps, use drag, click, and press_key based on the observed canvas dimensions and visible UI.
-- Do not submit forms, make purchases, send messages, or change account/security settings without the submit_form tool; it is confirmation-gated.
+- Do not submit forms, make purchases, send messages, or change account/security settings without the submit_form tool. The API may require confirmation before that tool submits.
 - Keep the task focused and stop with finish when complete or blocked.
 """
 
@@ -126,6 +100,7 @@ class AgentSession:
     max_steps: int
     timeout_seconds: int
     artifact_dir: Path
+    require_confirmation: bool = False
     step_count: int = 0
     pending_confirmation: dict[str, Any] | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -135,12 +110,17 @@ class AgentRunner:
     def __init__(self, browser, artifact_dir: Path) -> None:
         self.browser = browser
         self.artifact_dir = artifact_dir
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        self.client = AsyncAnthropic(api_key=api_key) if api_key else None
+        self.client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
-    async def start_session(self, task_id: str, url: str, instruction: str, max_steps: int, timeout_seconds: int) -> AgentSession:
-        if not self.client:
-            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    async def start_session(
+        self,
+        task_id: str,
+        url: str,
+        instruction: str,
+        max_steps: int,
+        timeout_seconds: int,
+        require_confirmation: bool = False,
+    ) -> AgentSession:
         validate_public_url(url)
         context = await self.browser.new_context(viewport={"width": 1440, "height": 900})
         page = await context.new_page()
@@ -151,42 +131,44 @@ class AgentRunner:
             context=context,
             page=page,
             messages=[
-                {"role": "user", "content": f"User instruction: {instruction}\nInitial page observation:\n{await self.observe(page)}"},
+                {"role": "user", "content": [{"text": f"User instruction: {instruction}\nInitial page observation:\n{await self.observe(page)}"}]},
             ],
             max_steps=max_steps,
             timeout_seconds=timeout_seconds,
             artifact_dir=self.artifact_dir,
+            require_confirmation=require_confirmation,
         )
         return session
 
     async def run_until_pause(self, session: AgentSession, allow_submission: bool = False) -> dict[str, Any]:
-        if not self.client:
-            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
         while session.step_count < session.max_steps:
             session.step_count += 1
-            completion = await self.client.messages.create(
-                model=MODEL,
-                system=SYSTEM_PROMPT,
+            completion = await asyncio.to_thread(
+                self.client.converse,
+                modelId=MODEL_ID,
+                system=[{"text": SYSTEM_PROMPT}],
                 messages=session.messages,
-                tools=CLAUDE_TOOLS,
-                max_tokens=1_500,
+                toolConfig={"tools": BEDROCK_TOOLS},
+                inferenceConfig={"maxTokens": 1_500},
             )
-            session.messages.append({"role": "assistant", "content": [block.model_dump() for block in completion.content]})
-            tool_calls = [block for block in completion.content if block.type == "tool_use"]
+            assistant_message = completion["output"]["message"]
+            session.messages.append(assistant_message)
+            content = assistant_message.get("content", [])
+            tool_calls = [block["toolUse"] for block in content if "toolUse" in block]
             if not tool_calls:
-                summary = "\n".join(block.text for block in completion.content if block.type == "text") or "The agent stopped without a summary."
+                summary = "\n".join(block["text"] for block in content if "text" in block) or "The agent stopped without a summary."
                 return {"status": "completed", "summary": summary}
 
             tool_results = []
             for tool_call in tool_calls:
-                name = tool_call.name
-                args = tool_call.input or {}
+                name = tool_call["name"]
+                args = tool_call.get("input") or {}
                 event = {"step": session.step_count, "tool": name, "arguments": self._mask_args(name, args)}
-                if name == "submit_form" and not allow_submission:
+                if name == "submit_form" and session.require_confirmation and not allow_submission:
                     session.pending_confirmation = {
                         "reason": args.get("reason", "The agent wants to submit the form."),
                         "url": session.page.url,
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call["toolUseId"],
                     }
                     event["status"] = "waiting_confirmation"
                     session.events.append(event)
@@ -195,11 +177,18 @@ class AgentRunner:
                 result = await self.execute_tool(session, name, args, allow_submission)
                 event["result"] = result
                 session.events.append(event)
-                tool_results.append({"type": "tool_result", "tool_use_id": tool_call.id, "content": json.dumps(result)})
+                tool_results.append({
+                    "toolResult": {
+                        "toolUseId": tool_call["toolUseId"],
+                        "content": [{"text": json.dumps(result)}],
+                    }
+                })
 
             session.messages.append({"role": "user", "content": tool_results})
-
-            session.messages.append({"role": "user", "content": f"Updated page observation after step {session.step_count}:\n{await self.observe(session.page)}"})
+            session.messages.append({
+                "role": "user",
+                "content": [{"text": f"Updated page observation after step {session.step_count}:\n{await self.observe(session.page)}"}],
+            })
 
         return {"status": "failed", "error": f"Agent reached the maximum of {session.max_steps} steps"}
 
@@ -237,7 +226,7 @@ class AgentRunner:
             await page.screenshot(path=str(path), full_page=True)
             return {"ok": True, "artifact": f"/artifacts/{session.task_id}/{path.name}"}
         if name == "submit_form":
-            if not allow_submission:
+            if session.require_confirmation and not allow_submission:
                 return {"ok": False, "confirmation_required": True}
             form = page.locator("form").first
             await form.evaluate("form => form.requestSubmit()")

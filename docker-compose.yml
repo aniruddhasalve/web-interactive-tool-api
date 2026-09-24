@@ -4,11 +4,14 @@ services:
     ports:
       - "8000:8000"
     environment:
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-us.anthropic.claude-sonnet-4-6}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       ARTIFACT_DIR: /artifacts
       MAX_SITES_PER_JOB: 5
       DEFAULT_TIMEOUT_SECONDS: 30
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
     volumes:
       - ./artifacts:/artifacts
     restart: unless-stopped

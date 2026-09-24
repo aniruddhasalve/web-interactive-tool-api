@@ -8,13 +8,13 @@ Aniruddha Salve — salveaniruddha180@gmail.com
 
 ## AI browser agent
 
-The API also accepts a natural-language instruction and lets an OpenAI tool-calling agent operate the browser dynamically. The agent can inspect visible text and controls, click selectors or coordinates, type, press keys, select options, scroll, drag on canvas applications, and capture screenshots. Form submission is confirmation-gated.
+The API also accepts a natural-language instruction and lets an AWS Bedrock tool-calling agent operate the browser dynamically. The agent can inspect visible text and controls, click selectors or coordinates, type, press keys, select options, scroll, drag on canvas applications, and capture screenshots. Form submission proceeds automatically by default when it is part of the requested workflow; set `require_confirmation` to `true` when a caller must review the final submission first.
 
-Set a direct Anthropic Claude API key before starting the service:
+Configure AWS credentials with permission to call Amazon Bedrock before starting the service:
 
 ```bash
 cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY
+# Edit .env and set AWS_REGION, BEDROCK_MODEL_ID, and AWS credentials if you are not using an IAM role
 ```
 
 Create an agent task:
@@ -25,7 +25,9 @@ curl -X POST http://localhost:8000/v1/agent/tasks \
   -d '{"url":"https://example.com","instruction":"Inspect the page and take a screenshot."}'
 ```
 
-Poll `GET /v1/agent/tasks/{task_id}`. If the agent reaches a form submission, the status becomes `waiting_confirmation`; review the returned `confirmation` object and call `POST /v1/agent/tasks/{task_id}/confirm` only when the final action is approved. Use `/cancel` to stop a task.
+For a confirmation-gated workflow, include `"require_confirmation": true`. Without that field, it defaults to `false`, so registration and other straightforward requested form submissions do not pause at `waiting_confirmation`.
+
+Poll `GET /v1/agent/tasks/{task_id}`. If `require_confirmation` is enabled and the agent reaches a form submission, the status becomes `waiting_confirmation`; review the returned `confirmation` object and call `POST /v1/agent/tasks/{task_id}/confirm` only when the final action is approved. Use `/cancel` to stop a task.
 
 For a canvas game, a request can look like: `Open the game, inspect the controls, and play one round using clicks, drags, and keyboard input. Stop if the page asks for a login or payment.` The agent can interact with DOM-based and canvas-based games, but game-specific success depends on what the page exposes and whether it is reachable.
 
@@ -33,7 +35,7 @@ For a canvas game, a request can look like: `Open the game, inspect the controls
 
 ```bash
 cp .env.example .env
-# Edit .env and set OPENAI_API_KEY
+# Edit .env and configure AWS Bedrock credentials
 docker compose up --build
 ```
 
